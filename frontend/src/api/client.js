@@ -3,7 +3,7 @@
  * Interacts with backend authentication, fraud detection, and health endpoints.
  */
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 
 /**
  * Custom API error with HTTP status and user-friendly message.
