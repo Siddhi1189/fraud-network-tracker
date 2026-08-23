@@ -1,0 +1,13 @@
+{
+  "name": "fraud-network-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fraud Detection & Money Mule Network Tracker",
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "start:backend": "npm --prefix backend start",
+    "db:schema": "npm --prefix backend run db:schema",
+    "db:seed": "npm --prefix backend run db:seed"
+  }
+}
