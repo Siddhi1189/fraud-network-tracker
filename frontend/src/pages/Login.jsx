@@ -103,6 +103,17 @@ export default function Login() {
 
       {/* Main Login Card */}
       <div className="w-full max-w-[440px] bg-white border border-[#EAE5DC] rounded-3xl p-8 sm:p-10 shadow-2xl shadow-stone-300/40 relative z-10">
+        {/* Back to Website Navigation */}
+        <div className="mb-4 text-left">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 hover:text-[#0E4D45] transition group"
+          >
+            <span className="transition-transform group-hover:-translate-x-0.5">&larr;</span>
+            <span>Back to website</span>
+          </Link>
+        </div>
+
         {/* Brand Header */}
         <div className="flex flex-col items-center text-center">
           <Link to="/" className="inline-flex items-center gap-2.5 group transition mb-4">
