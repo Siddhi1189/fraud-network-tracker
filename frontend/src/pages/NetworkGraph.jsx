@@ -26,6 +26,7 @@ export default function NetworkGraph() {
   const [searchNotFound, setSearchNotFound] = useState(false);
   const [currentLayout, setCurrentLayout] = useState('cose');
   const [nodesLocked, setNodesLocked] = useState(false);
+  const [layoutNotice, setLayoutNotice] = useState(null);
 
   // Fetch investigation data and build graph
   const loadGraphData = useCallback(async (accId) => {
@@ -36,6 +37,7 @@ export default function NetworkGraph() {
     setSelectedNode(null);
     setSearchTerm('');
     setSearchNotFound(false);
+    setLayoutNotice(null);
 
     try {
       const data = await fraudApi.investigate(accId.trim());
@@ -63,7 +65,7 @@ export default function NetworkGraph() {
   }, [id, loadGraphData]);
 
   // Layout configuration generator
-  const getLayoutConfig = (layoutName) => {
+  const getLayoutConfig = useCallback((layoutName, cyInstance) => {
     if (layoutName === 'concentric') {
       return {
         name: 'concentric',
@@ -75,12 +77,21 @@ export default function NetworkGraph() {
     }
 
     if (layoutName === 'breadthfirst') {
+      let roots;
+      if (cyInstance && !cyInstance.destroyed()) {
+        const primaryNodes = cyInstance.nodes().filter((n) => n.data('isPrimary'));
+        if (primaryNodes.length > 0) {
+          roots = primaryNodes;
+        }
+      }
+
       return {
         name: 'breadthfirst',
-        directed: true,
+        directed: false,
         padding: 35,
         animate: false,
-        roots: cyRef.current ? cyRef.current.nodes('[isPrimary = true]') : undefined,
+        spacingFactor: 1.25,
+        roots,
       };
     }
 
@@ -100,7 +111,77 @@ export default function NetworkGraph() {
       randomize: false,
       animate: false,
     };
-  };
+  }, []);
+
+  // Safe layout execution with fallback mechanism
+  const safeRunLayout = useCallback((cyInstance, requestedLayout, isInitial = false) => {
+    if (!cyInstance || cyInstance.destroyed()) return;
+
+    // Verify graph has nodes
+    const nodes = cyInstance.nodes();
+    if (nodes.length === 0) return;
+
+    // Verify all nodes have valid IDs
+    const validNodeIds = new Set();
+    nodes.forEach((n) => {
+      const nodeId = n.id();
+      if (nodeId) validNodeIds.add(nodeId);
+    });
+
+    // Verify edges reference existing source and target nodes
+    const edges = cyInstance.edges();
+    edges.forEach((e) => {
+      const source = e.data('source');
+      const target = e.data('target');
+      if (!validNodeIds.has(source) || !validNodeIds.has(target)) {
+        console.warn(`Edge ${e.id()} references missing source (${source}) or target (${target})`);
+      }
+    });
+
+    const execute = (targetLayout, isFallback = false) => {
+      try {
+        const config = getLayoutConfig(targetLayout, cyInstance);
+        const layout = cyInstance.layout(config);
+
+        layout.on('layoutstop', () => {
+          try {
+            if (cyInstance && !cyInstance.destroyed()) {
+              cyInstance.fit(null, 35);
+              if (isInitial) {
+                const primary = cyInstance.nodes().filter((n) => n.data('isPrimary'));
+                if (primary.length > 0) {
+                  primary.first().select();
+                  setSelectedNode(primary.first().data());
+                }
+              }
+            }
+          } catch (stopErr) {
+            console.warn('Error during layoutstop handler:', stopErr);
+          }
+        });
+
+        layout.run();
+
+        if (isFallback) {
+          setLayoutNotice('Hierarchy layout is unavailable for this network structure. Showing force layout.');
+        } else {
+          setLayoutNotice(null);
+        }
+      } catch (err) {
+        console.warn(`Cytoscape layout '${targetLayout}' execution failed:`, err);
+        if (targetLayout === 'breadthfirst' || requestedLayout === 'breadthfirst') {
+          // Gracefully fall back to cose layout
+          execute('cose', true);
+        } else if (targetLayout !== 'cose') {
+          execute('cose', true);
+        } else {
+          setLayoutNotice('Unable to compute automatic layout. Preserving node positions.');
+        }
+      }
+    };
+
+    execute(requestedLayout, false);
+  }, [getLayoutConfig]);
 
   // Initialize and update Cytoscape instance
   useEffect(() => {
@@ -112,53 +193,55 @@ export default function NetworkGraph() {
       cyRef.current.destroy();
     }
 
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements,
-      boxSelectionEnabled: false,
-      autounselectify: false,
-      style: [
-        // Base Node
-        {
-          selector: 'node',
-          style: {
-            'label': 'data(label)',
-            'font-family': 'Plus Jakarta Sans, -apple-system, BlinkMacSystemFont, sans-serif',
-            'font-size': '9.5px',
-            'font-weight': '600',
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'text-wrap': 'wrap',
-            'text-max-width': '78px',
-            'color': '#FFFFFF',
-            'text-outline-width': 2,
-            'text-outline-color': '#0F172A',
-            'width': 48,
-            'height': 48,
-            'border-width': 2.5,
-            'border-color': '#FFFFFF',
-            'transition-property': 'background-color, border-color, border-width, opacity',
-            'transition-duration': '0.15s',
+    let cy;
+    try {
+      cy = cytoscape({
+        container: containerRef.current,
+        elements,
+        boxSelectionEnabled: false,
+        autounselectify: false,
+        style: [
+          // Base Node
+          {
+            selector: 'node',
+            style: {
+              'label': 'data(label)',
+              'font-family': 'Plus Jakarta Sans, -apple-system, BlinkMacSystemFont, sans-serif',
+              'font-size': '9.5px',
+              'font-weight': '600',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'text-wrap': 'wrap',
+              'text-max-width': '78px',
+              'color': '#FFFFFF',
+              'text-outline-width': 2,
+              'text-outline-color': '#0F172A',
+              'width': 48,
+              'height': 48,
+              'border-width': 2.5,
+              'border-color': '#FFFFFF',
+              'transition-property': 'background-color, border-color, border-width, opacity',
+              'transition-duration': '0.15s',
+            },
           },
-        },
 
-        // Tier 1: Primary Account (Dominant Focal Point)
-        {
-          selector: 'node[isPrimary = true]',
-          style: {
-            'background-color': '#0E4D45',
-            'border-color': '#10B981',
-            'border-width': 4.5,
-            'width': 72,
-            'height': 72,
-            'font-size': '11px',
-            'font-weight': 'bold',
-            'text-max-width': '95px',
-            'text-outline-width': 2.5,
-            'text-outline-color': '#052E28',
-            'z-index': 100,
+          // Tier 1: Primary Account (Dominant Focal Point)
+          {
+            selector: 'node[?isPrimary]',
+            style: {
+              'background-color': '#0E4D45',
+              'border-color': '#10B981',
+              'border-width': 4.5,
+              'width': 72,
+              'height': 72,
+              'font-size': '11px',
+              'font-weight': 'bold',
+              'text-max-width': '95px',
+              'text-outline-width': 2.5,
+              'text-outline-color': '#052E28',
+              'z-index': 100,
+            },
           },
-        },
 
         // Tier 2: Directly Connected Accounts (Inbound / Outbound / Cycle)
         {
@@ -336,10 +419,9 @@ export default function NetworkGraph() {
           },
         },
       ],
-      layout: getLayoutConfig(currentLayout),
+      layout: { name: 'null' },
     });
 
-    // Event listeners
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       setSelectedNode(node.data());
@@ -351,26 +433,21 @@ export default function NetworkGraph() {
       }
     });
 
-    // Run layout and center/fit after layout completes
-    const layout = cy.layout(getLayoutConfig(currentLayout));
-    layout.on('layoutstop', () => {
-      cy.fit(null, 35);
-      const primary = cy.nodes('[isPrimary = true]');
-      if (primary.length > 0) {
-        primary.select();
-        setSelectedNode(primary.first().data());
-      }
-    });
-    layout.run();
-
     cyRef.current = cy;
 
-    return () => {
-      if (cyRef.current) {
-        cyRef.current.destroy();
-      }
-    };
-  }, [report, currentLayout]);
+    // Defensively apply initial layout
+    safeRunLayout(cy, currentLayout, true);
+  } catch (cyInitErr) {
+    console.error('Failed to initialize Cytoscape:', cyInitErr);
+    return;
+  }
+
+  return () => {
+    if (cyRef.current) {
+      cyRef.current.destroy();
+    }
+  };
+}, [report, currentLayout, safeRunLayout]);
 
   // Handle Search Input Submission (loads new account investigation)
   const handleSearchSubmit = (e) => {
@@ -424,11 +501,7 @@ export default function NetworkGraph() {
   const handleLayoutChange = (layoutName) => {
     setCurrentLayout(layoutName);
     if (cyRef.current) {
-      const layout = cyRef.current.layout(getLayoutConfig(layoutName));
-      layout.on('layoutstop', () => {
-        cyRef.current.fit(null, 35);
-      });
-      layout.run();
+      safeRunLayout(cyRef.current, layoutName, false);
     }
   };
 
@@ -612,6 +685,28 @@ export default function NetworkGraph() {
                 </select>
               </div>
             </div>
+
+            {/* Non-blocking Layout Fallback Notice */}
+            {layoutNotice && (
+              <div className="absolute top-16 left-4 right-4 sm:left-auto sm:right-4 z-20 max-w-md px-3.5 py-2 bg-amber-50/95 border border-amber-200 backdrop-blur-xs rounded-xl shadow-xs text-xs text-amber-900 flex items-center justify-between gap-2.5 animate-fadeIn pointer-events-auto">
+                <div className="flex items-center gap-2 min-w-0">
+                  <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span className="font-medium text-[11px] sm:text-xs leading-tight">{layoutNotice}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLayoutNotice(null)}
+                  className="p-1 hover:bg-amber-100 rounded-lg text-amber-700 transition cursor-pointer shrink-0"
+                  title="Dismiss notice"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
 
             {/* Cytoscape Canvas Container DOM Element */}
             <div ref={containerRef} className="w-full h-full min-h-[540px] bg-[#FAF7F2]/60 flex-1 cursor-grab active:cursor-grabbing" />
